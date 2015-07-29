@@ -144,12 +144,12 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
 
     private var writeToFileURL : NSURL? = nil {
         didSet {
-            openFile()
+            openFile(false)
         }
     }
     private var logFileHandle: NSFileHandle? = nil
 
-    public init(owner: XCGLogger, writeToFile: AnyObject, identifier: String = "") {
+    public init(owner: XCGLogger, writeToFile: AnyObject, append: Bool, identifier: String = "") {
         self.owner = owner
         self.identifier = identifier
 
@@ -163,7 +163,7 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
             writeToFileURL = nil
         }
 
-        openFile()
+        openFile(append)
     }
 
     deinit {
@@ -225,20 +225,25 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
         return logLevel >= self.outputLogLevel
     }
 
-    private func openFile() {
+    private func openFile(append: Bool) {
         if logFileHandle != nil {
             closeFile()
         }
 
         if let writeToFileURL = writeToFileURL {
             if let path = writeToFileURL.path {
-                NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
+                if (!append || !NSFileManager.defaultManager().fileExistsAtPath(path)) {
+                    NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
+                }
                 var fileError : NSError? = nil
                 logFileHandle = NSFileHandle(forWritingToURL: writeToFileURL, error: &fileError)
                 if logFileHandle == nil {
                     owner._logln("Attempt to open log file for writing failed: \(fileError?.localizedDescription)", logLevel: .Error)
                 }
                 else {
+                    if (append) {
+                        logFileHandle?.seekToEndOfFile();
+                    }
                     owner.logAppDetails(selectedLogDestination: self)
 
                     let logDetails = XCGLogDetails(logLevel: .Info, date: NSDate(), logMessage: "XCGLogger writing to log to: \(writeToFileURL)", functionName: "", fileName: "", lineNumber: 0)
@@ -493,11 +498,11 @@ public class XCGLogger : DebugPrintable {
     }
 
     // MARK: - Setup methods
-    public class func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, fileLogLevel: LogLevel? = nil) {
-        defaultInstance().setup(logLevel: logLevel, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, writeToFile: writeToFile)
+    public class func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileLogLevel: LogLevel? = nil) {
+        defaultInstance().setup(logLevel: logLevel, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, writeToFile: writeToFile, appendToFile: appendToFile)
     }
 
-    public func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, fileLogLevel: LogLevel? = nil) {
+    public func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileLogLevel: LogLevel? = nil) {
         outputLogLevel = logLevel;
 
         if let logDestination: XCGLogDestinationProtocol = logDestination(XCGLogger.constants.baseConsoleLogDestinationIdentifier) {
@@ -516,7 +521,7 @@ public class XCGLogger : DebugPrintable {
 
         if let writeToFile : AnyObject = writeToFile {
             // We've been passed a file to use for logging, set up a file logger
-            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
+            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, append: appendToFile, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
 
             standardFileLogDestination.showThreadName = showThreadName
             standardFileLogDestination.showLogLevel = showLogLevel

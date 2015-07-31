@@ -144,12 +144,12 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
 
     private var writeToFileURL : NSURL? = nil {
         didSet {
-            openFile(false)
+            openFile(false,fileSizeLimit:-1)
         }
     }
     private var logFileHandle: NSFileHandle? = nil
 
-    public init(owner: XCGLogger, writeToFile: AnyObject, append: Bool, identifier: String = "") {
+    public init(owner: XCGLogger, writeToFile: AnyObject, append: Bool, fileSizeLimit: Int64, identifier: String = "") {
         self.owner = owner
         self.identifier = identifier
 
@@ -163,7 +163,7 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
             writeToFileURL = nil
         }
 
-        openFile(append)
+        openFile(append,fileSizeLimit:fileSizeLimit)
     }
 
     deinit {
@@ -225,13 +225,40 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
         return logLevel >= self.outputLogLevel
     }
 
-    private func openFile(append: Bool) {
+    private func openFile(append: Bool, fileSizeLimit: Int64) {
         if logFileHandle != nil {
             closeFile()
         }
 
         if let writeToFileURL = writeToFileURL {
             if let path = writeToFileURL.path {
+                if (fileSizeLimit > 0) {
+                    // if size of file > fileSize Limit
+                    var error : NSErrorPointer
+                    let fileAttributes = NSFileManager.defaultManager().attributesOfItemAtPath(path, error: nil)
+                    if let fileAttributes = fileAttributes {
+                        let size : NSNumber = fileAttributes[NSFileSize] as! NSNumber
+                        if (size.unsignedLongLongValue >= UInt64(fileSizeLimit)) {
+                            // rename existing file
+                            var newFilePath = ""
+                            newFilePath += path.stringByDeletingPathExtension as String!
+
+                            let fileModDate : NSDate = fileAttributes[NSFileModificationDate] as! NSDate
+                            let dateFormatter = NSDateFormatter()
+                            dateFormatter.dateFormat = "yyyyMMdd-HHmmss"
+                            let fileModDateString = dateFormatter.stringFromDate(fileModDate)
+
+                            newFilePath += String(format:".%@",fileModDateString)
+
+                            let filePathExtension = path.pathExtension
+                            if (filePathExtension.lengthOfBytesUsingEncoding(NSUTF8StringEncoding) > 0) {
+                                newFilePath += String(format:".%@",filePathExtension)
+                            }
+                            
+                            NSFileManager.defaultManager().moveItemAtPath(path, toPath: newFilePath, error: nil)
+                        }
+                    }
+                }
                 if (!append || !NSFileManager.defaultManager().fileExistsAtPath(path)) {
                     NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
                 }
@@ -498,11 +525,11 @@ public class XCGLogger : DebugPrintable {
     }
 
     // MARK: - Setup methods
-    public class func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileLogLevel: LogLevel? = nil) {
+    public class func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileSizeLimit: Int64 = -1, fileLogLevel: LogLevel? = nil) {
         defaultInstance().setup(logLevel: logLevel, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, writeToFile: writeToFile, appendToFile: appendToFile)
     }
 
-    public func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileLogLevel: LogLevel? = nil) {
+    public func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileSizeLimit: Int64 = -1, fileLogLevel: LogLevel? = nil) {
         outputLogLevel = logLevel;
 
         if let logDestination: XCGLogDestinationProtocol = logDestination(XCGLogger.constants.baseConsoleLogDestinationIdentifier) {
@@ -521,7 +548,7 @@ public class XCGLogger : DebugPrintable {
 
         if let writeToFile : AnyObject = writeToFile {
             // We've been passed a file to use for logging, set up a file logger
-            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, append: appendToFile, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
+            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, append: appendToFile, fileSizeLimit: fileSizeLimit, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
 
             standardFileLogDestination.showThreadName = showThreadName
             standardFileLogDestination.showLogLevel = showLogLevel

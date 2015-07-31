@@ -42,6 +42,7 @@ public protocol XCGLogDestinationProtocol: DebugPrintable {
     func processLogDetails(logDetails: XCGLogDetails)
     func processInternalLogDetails(logDetails: XCGLogDetails) // Same as processLogDetails but should omit function/file/line info
     func isEnabledForLogLevel(logLevel: XCGLogger.LogLevel) -> Bool
+    func flush()
 }
 
 // MARK: - XCGConsoleLogDestination
@@ -127,6 +128,9 @@ public class XCGConsoleLogDestination : XCGLogDestinationProtocol, DebugPrintabl
         get {
             return "XCGConsoleLogDestination: \(identifier) - LogLevel: \(outputLogLevel.description()) showThreadName: \(showThreadName) showLogLevel: \(showLogLevel) showFileName: \(showFileName) showLineNumber: \(showLineNumber)"
         }
+    }
+    
+    public func flush() {
     }
 }
 
@@ -282,8 +286,13 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
     }
 
     private func closeFile() {
+        flush()
         logFileHandle?.closeFile()
         logFileHandle = nil
+    }
+    
+    public func flush() {
+        logFileHandle?.synchronizeFile()
     }
 
     // MARK: - DebugPrintable
@@ -481,6 +490,22 @@ public class XCGLogger : DebugPrintable {
         }
 
         return Statics.logQueue
+    }
+    
+    public func flushLog() {
+        for logDestination in self.logDestinations {
+            // flush dispatch queue
+            let dispatchGroup = dispatch_group_create();
+            dispatch_group_async(dispatchGroup, XCGLogger.logQueue) {
+                NSLog("Flushing queue");
+            };
+            dispatch_group_wait(dispatchGroup, DISPATCH_TIME_FOREVER);
+            
+            // if destination is a file, flush it
+            if let logDestination = logDestination as? XCGFileLogDestination {
+                logDestination.flush()
+            }
+        }
     }
 
     private var _dateFormatter: NSDateFormatter? = nil

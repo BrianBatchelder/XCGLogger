@@ -275,11 +275,6 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
                     if (append) {
                         logFileHandle?.seekToEndOfFile();
                     }
-                    owner.logAppDetails(selectedLogDestination: self)
-
-                    let logDetails = XCGLogDetails(logLevel: .Info, date: NSDate(), logMessage: "XCGLogger writing to log to: \(writeToFileURL)", functionName: "", fileName: "", lineNumber: 0)
-                    owner._logln(logDetails.logMessage, logLevel: logDetails.logLevel)
-                    processInternalLogDetails(logDetails)
                 }
             }
         }
@@ -497,7 +492,6 @@ public class XCGLogger : DebugPrintable {
             // flush dispatch queue
             let dispatchGroup = dispatch_group_create();
             dispatch_group_async(dispatchGroup, XCGLogger.logQueue) {
-                NSLog("Flushing queue");
             };
             dispatch_group_wait(dispatchGroup, DISPATCH_TIME_FOREVER);
             
@@ -569,8 +563,6 @@ public class XCGLogger : DebugPrintable {
             }
         }
 
-        logAppDetails()
-
         if let writeToFile : AnyObject = writeToFile {
             // We've been passed a file to use for logging, set up a file logger
             let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, append: appendToFile, fileSizeLimit: fileSizeLimit, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
@@ -583,6 +575,8 @@ public class XCGLogger : DebugPrintable {
 
             addLogDestination(standardFileLogDestination)
         }
+        
+        logAppDetails()
     }
 
     // MARK: - Logging methods
@@ -646,9 +640,20 @@ public class XCGLogger : DebugPrintable {
         let processInfo: NSProcessInfo = NSProcessInfo.processInfo()
         let XCGLoggerVersionNumber = XCGLogger.constants.versionString
 
-        let logDetails: Array<XCGLogDetails> = [XCGLogDetails(logLevel: .Info, date: date, logMessage: "\(processInfo.processName) \(buildString)PID: \(processInfo.processIdentifier)", functionName: "", fileName: "", lineNumber: 0),
-            XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Version: \(XCGLoggerVersionNumber) - LogLevel: \(outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0)]
+        var logDetails: Array<XCGLogDetails> = [XCGLogDetails(logLevel: .Info, date: date, logMessage: "\(processInfo.processName) \(buildString)PID: \(processInfo.processIdentifier)", functionName: "", fileName: "", lineNumber: 0),
+            ]
 
+        // log LogLevel for each logDestination
+        for logDestination in logDestinations {
+            if let logDestination = logDestination as? XCGConsoleLogDestination {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Version: \(XCGLoggerVersionNumber) - Console LogLevel: \(outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0))
+            } else if let logDestination = logDestination as? XCGFileLogDestination {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Log file = \(logDestination.writeToFileURL!) - LogLevel: \(logDestination.outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0))
+            } else {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger DestinationID = \(logDestination.identifier) - LogLevel: \(logDestination.outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0))
+            }
+        }
+        
         for logDestination in (selectedLogDestination != nil ? [selectedLogDestination!] : logDestinations) {
             for logDetail in logDetails {
                 if !logDestination.isEnabledForLogLevel(.Info) {

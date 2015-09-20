@@ -42,6 +42,7 @@ public protocol XCGLogDestinationProtocol: DebugPrintable {
     func processLogDetails(logDetails: XCGLogDetails)
     func processInternalLogDetails(logDetails: XCGLogDetails) // Same as processLogDetails but should omit function/file/line info
     func isEnabledForLogLevel(logLevel: XCGLogger.LogLevel) -> Bool
+    func flush()
 }
 
 // MARK: - XCGConsoleLogDestination
@@ -54,6 +55,7 @@ public class XCGConsoleLogDestination : XCGLogDestinationProtocol, DebugPrintabl
     public var showThreadName: Bool = false
     public var showFileName: Bool = true
     public var showLineNumber: Bool = true
+    public var showFunctionName: Bool = true
     public var showLogLevel: Bool = true
 
     public var xcodeColors: [XCGLogger.LogLevel: XCGLogger.XcodeColor]? = nil
@@ -80,13 +82,17 @@ public class XCGConsoleLogDestination : XCGLogDestinationProtocol, DebugPrintabl
         else if showLineNumber {
             extendedDetails += "[" + String(logDetails.lineNumber) + "] "
         }
+        
+        if showFunctionName {
+            extendedDetails += "\(logDetails.functionName): "
+        }
 
         var formattedDate: String = logDetails.date.description
         if let dateFormatter = owner.dateFormatter {
             formattedDate = dateFormatter.stringFromDate(logDetails.date)
         }
 
-        var fullLogMessage: String =  "\(formattedDate) \(extendedDetails)\(logDetails.functionName): \(logDetails.logMessage)\n"
+        var fullLogMessage: String =  "\(formattedDate) \(extendedDetails)\(logDetails.logMessage)\n"
 
         if owner.xcodeColorsEnabled,
             let xcodeColor = (xcodeColors ?? owner.xcodeColors)[logDetails.logLevel] {
@@ -125,8 +131,11 @@ public class XCGConsoleLogDestination : XCGLogDestinationProtocol, DebugPrintabl
     // MARK: - DebugPrintable
     public var debugDescription: String {
         get {
-            return "XCGConsoleLogDestination: \(identifier) - LogLevel: \(outputLogLevel.description()) showThreadName: \(showThreadName) showLogLevel: \(showLogLevel) showFileName: \(showFileName) showLineNumber: \(showLineNumber)"
+            return "XCGConsoleLogDestination: \(identifier) - LogLevel: \(outputLogLevel.description()) showThreadName: \(showThreadName) showLogLevel: \(showLogLevel) showFileName: \(showFileName) showFunctionName: \(showFunctionName) showLineNumber: \(showLineNumber)"
         }
+    }
+    
+    public func flush() {
     }
 }
 
@@ -140,16 +149,17 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
     public var showThreadName: Bool = false
     public var showFileName: Bool = true
     public var showLineNumber: Bool = true
+    public var showFunctionName: Bool = true
     public var showLogLevel: Bool = true
 
     private var writeToFileURL : NSURL? = nil {
         didSet {
-            openFile()
+            openFile(false,fileSizeLimit:-1)
         }
     }
     private var logFileHandle: NSFileHandle? = nil
 
-    public init(owner: XCGLogger, writeToFile: AnyObject, identifier: String = "") {
+    public init(owner: XCGLogger, writeToFile: AnyObject, append: Bool, fileSizeLimit: Int64, identifier: String = "") {
         self.owner = owner
         self.identifier = identifier
 
@@ -163,7 +173,7 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
             writeToFileURL = nil
         }
 
-        openFile()
+        openFile(append,fileSizeLimit:fileSizeLimit)
     }
 
     deinit {
@@ -190,12 +200,16 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
             extendedDetails += "[" + String(logDetails.lineNumber) + "] "
         }
 
+        if showFunctionName {
+            extendedDetails += "\(logDetails.functionName): "
+        }
+        
         var formattedDate: String = logDetails.date.description
         if let dateFormatter = owner.dateFormatter {
             formattedDate = dateFormatter.stringFromDate(logDetails.date)
         }
 
-        var fullLogMessage: String =  "\(formattedDate) \(extendedDetails)\(logDetails.functionName): \(logDetails.logMessage)\n"
+        var fullLogMessage: String =  "\(formattedDate) \(extendedDetails)\(logDetails.logMessage)\n"
 
         if let encodedData = fullLogMessage.dataUsingEncoding(NSUTF8StringEncoding) {
             logFileHandle?.writeData(encodedData)
@@ -225,39 +239,71 @@ public class XCGFileLogDestination : XCGLogDestinationProtocol, DebugPrintable {
         return logLevel >= self.outputLogLevel
     }
 
-    private func openFile() {
+    private func openFile(append: Bool, fileSizeLimit: Int64) {
         if logFileHandle != nil {
             closeFile()
         }
 
         if let writeToFileURL = writeToFileURL {
             if let path = writeToFileURL.path {
-                NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
+                if (fileSizeLimit > 0) {
+                    // if size of file > fileSize Limit
+                    var error : NSErrorPointer
+                    let fileAttributes = NSFileManager.defaultManager().attributesOfItemAtPath(path, error: nil)
+                    if let fileAttributes = fileAttributes {
+                        let size : NSNumber = fileAttributes[NSFileSize] as! NSNumber
+                        if (size.unsignedLongLongValue >= UInt64(fileSizeLimit)) {
+                            // rename existing file
+                            var newFilePath = ""
+                            newFilePath += path.stringByDeletingPathExtension as String!
+
+                            let fileModDate : NSDate = fileAttributes[NSFileModificationDate] as! NSDate
+                            let dateFormatter = NSDateFormatter()
+                            dateFormatter.dateFormat = "yyyyMMdd-HHmmss"
+                            let fileModDateString = dateFormatter.stringFromDate(fileModDate)
+
+                            newFilePath += String(format:".%@",fileModDateString)
+
+                            let filePathExtension = path.pathExtension
+                            if (filePathExtension.lengthOfBytesUsingEncoding(NSUTF8StringEncoding) > 0) {
+                                newFilePath += String(format:".%@",filePathExtension)
+                            }
+                            
+                            NSFileManager.defaultManager().moveItemAtPath(path, toPath: newFilePath, error: nil)
+                        }
+                    }
+                }
+                if (!append || !NSFileManager.defaultManager().fileExistsAtPath(path)) {
+                    NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
+                }
                 var fileError : NSError? = nil
                 logFileHandle = NSFileHandle(forWritingToURL: writeToFileURL, error: &fileError)
                 if logFileHandle == nil {
                     owner._logln("Attempt to open log file for writing failed: \(fileError?.localizedDescription)", logLevel: .Error)
                 }
                 else {
-                    owner.logAppDetails(selectedLogDestination: self)
-
-                    let logDetails = XCGLogDetails(logLevel: .Info, date: NSDate(), logMessage: "XCGLogger writing to log to: \(writeToFileURL)", functionName: "", fileName: "", lineNumber: 0)
-                    owner._logln(logDetails.logMessage, logLevel: logDetails.logLevel)
-                    processInternalLogDetails(logDetails)
+                    if (append) {
+                        logFileHandle?.seekToEndOfFile();
+                    }
                 }
             }
         }
     }
 
     private func closeFile() {
+        flush()
         logFileHandle?.closeFile()
         logFileHandle = nil
+    }
+    
+    public func flush() {
+        logFileHandle?.synchronizeFile()
     }
 
     // MARK: - DebugPrintable
     public var debugDescription: String {
         get {
-            return "XCGFileLogDestination: \(identifier) - LogLevel: \(outputLogLevel.description()) showThreadName: \(showThreadName)  showLogLevel: \(showLogLevel) showFileName: \(showFileName) showLineNumber: \(showLineNumber)"
+            return "XCGFileLogDestination: \(identifier) - LogLevel: \(outputLogLevel.description()) showThreadName: \(showThreadName)  showLogLevel: \(showLogLevel) showFileName: \(showFileName) showFunctionName: \(showFunctionName) showLineNumber: \(showLineNumber)"
         }
     }
 }
@@ -450,6 +496,21 @@ public class XCGLogger : DebugPrintable {
 
         return Statics.logQueue
     }
+    
+    public func flushLog() {
+        for logDestination in self.logDestinations {
+            // flush dispatch queue
+            let dispatchGroup = dispatch_group_create();
+            dispatch_group_async(dispatchGroup, XCGLogger.logQueue) {
+            };
+            dispatch_group_wait(dispatchGroup, DISPATCH_TIME_FOREVER);
+            
+            // if destination is a file, flush it
+            if let logDestination = logDestination as? XCGFileLogDestination {
+                logDestination.flush()
+            }
+        }
+    }
 
     private var _dateFormatter: NSDateFormatter? = nil
     public var dateFormatter: NSDateFormatter? {
@@ -493,11 +554,11 @@ public class XCGLogger : DebugPrintable {
     }
 
     // MARK: - Setup methods
-    public class func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, fileLogLevel: LogLevel? = nil) {
-        defaultInstance().setup(logLevel: logLevel, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, writeToFile: writeToFile)
+    public class func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, showFunctionNames: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileSizeLimit: Int64 = -1, fileLogLevel: LogLevel? = nil) {
+        defaultInstance().setup(logLevel: logLevel, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, writeToFile: writeToFile, appendToFile: appendToFile)
     }
 
-    public func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, writeToFile: AnyObject? = nil, fileLogLevel: LogLevel? = nil) {
+    public func setup(logLevel: LogLevel = .Debug, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, showFunctionNames: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileSizeLimit: Int64 = -1, fileLogLevel: LogLevel? = nil) {
         outputLogLevel = logLevel;
 
         if let logDestination: XCGLogDestinationProtocol = logDestination(XCGLogger.constants.baseConsoleLogDestinationIdentifier) {
@@ -508,24 +569,26 @@ public class XCGLogger : DebugPrintable {
                 standardConsoleLogDestination.showLogLevel = showLogLevel
                 standardConsoleLogDestination.showFileName = showFileNames
                 standardConsoleLogDestination.showLineNumber = showLineNumbers
+                standardConsoleLogDestination.showFunctionName = showFunctionNames
                 standardConsoleLogDestination.outputLogLevel = logLevel
             }
         }
 
-        logAppDetails()
-
         if let writeToFile : AnyObject = writeToFile {
             // We've been passed a file to use for logging, set up a file logger
-            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
+            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, append: appendToFile, fileSizeLimit: fileSizeLimit, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
 
             standardFileLogDestination.showThreadName = showThreadName
             standardFileLogDestination.showLogLevel = showLogLevel
             standardFileLogDestination.showFileName = showFileNames
             standardFileLogDestination.showLineNumber = showLineNumbers
+            standardFileLogDestination.showFunctionName = showFunctionNames
             standardFileLogDestination.outputLogLevel = fileLogLevel ?? logLevel
 
             addLogDestination(standardFileLogDestination)
         }
+        
+        logAppDetails()
     }
 
     // MARK: - Logging methods
@@ -589,9 +652,20 @@ public class XCGLogger : DebugPrintable {
         let processInfo: NSProcessInfo = NSProcessInfo.processInfo()
         let XCGLoggerVersionNumber = XCGLogger.constants.versionString
 
-        let logDetails: Array<XCGLogDetails> = [XCGLogDetails(logLevel: .Info, date: date, logMessage: "\(processInfo.processName) \(buildString)PID: \(processInfo.processIdentifier)", functionName: "", fileName: "", lineNumber: 0),
-            XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Version: \(XCGLoggerVersionNumber) - LogLevel: \(outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0)]
+        var logDetails: Array<XCGLogDetails> = [XCGLogDetails(logLevel: .Info, date: date, logMessage: "\(processInfo.processName) \(buildString)PID: \(processInfo.processIdentifier)", functionName: "", fileName: "", lineNumber: 0),
+            ]
 
+        // log LogLevel for each logDestination
+        for logDestination in logDestinations {
+            if let logDestination = logDestination as? XCGConsoleLogDestination {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Version: \(XCGLoggerVersionNumber) - Console LogLevel: \(outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0))
+            } else if let logDestination = logDestination as? XCGFileLogDestination {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Log file = \(logDestination.writeToFileURL!) - LogLevel: \(logDestination.outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0))
+            } else {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger DestinationID = \(logDestination.identifier) - LogLevel: \(logDestination.outputLogLevel.description())", functionName: "", fileName: "", lineNumber: 0))
+            }
+        }
+        
         for logDestination in (selectedLogDestination != nil ? [selectedLogDestination!] : logDestinations) {
             for logDetail in logDetails {
                 if !logDestination.isEnabledForLogLevel(.Info) {

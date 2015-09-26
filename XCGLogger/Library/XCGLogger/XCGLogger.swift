@@ -44,6 +44,7 @@ public protocol XCGLogDestinationProtocol: CustomDebugStringConvertible {
     func processLogDetails(logDetails: XCGLogDetails)
     func processInternalLogDetails(logDetails: XCGLogDetails) // Same as processLogDetails but should omit function/file/line info
     func isEnabledForLogLevel(logLevel: XCGLogger.LogLevel) -> Bool
+    func flush()
 }
 
 // MARK: - XCGBaseLogDestination
@@ -157,6 +158,10 @@ public class XCGBaseLogDestination: XCGLogDestinationProtocol, CustomDebugString
         // Do something with the text in an overridden version of this method
         precondition(false, "Must override this")
     }
+    
+    public func flush() {
+        // nop
+    }
 }
 
 // MARK: - XCGConsoleLogDestination
@@ -206,6 +211,9 @@ public class XCGNSLogDestination: XCGBaseLogDestination {
 
         NSLog("%@", adjustedText)
     }
+    public override func flush() {
+        // nop
+    }
 }
 
 // MARK: - XCGFileLogDestination
@@ -214,13 +222,13 @@ public class XCGFileLogDestination: XCGBaseLogDestination {
     // MARK: - Properties
     private var writeToFileURL: NSURL? = nil {
         didSet {
-            openFile()
+            openFile(false,fileSizeLimit:-1)
         }
     }
     private var logFileHandle: NSFileHandle? = nil
 
     // MARK: - Life Cycle
-    public init(owner: XCGLogger, writeToFile: AnyObject, identifier: String = "") {
+    public init(owner: XCGLogger, writeToFile: AnyObject, append: Bool, fileSizeLimit: Int64, identifier: String = "") {
         super.init(owner: owner, identifier: identifier)
 
         if writeToFile is NSString {
@@ -233,7 +241,7 @@ public class XCGFileLogDestination: XCGBaseLogDestination {
             writeToFileURL = nil
         }
 
-        openFile()
+        openFile(append,fileSizeLimit:fileSizeLimit)
     }
 
     deinit {
@@ -242,7 +250,7 @@ public class XCGFileLogDestination: XCGBaseLogDestination {
     }
 
     // MARK: - File Handling Methods
-    private func openFile() {
+    private func openFile(append: Bool, fileSizeLimit: Int64) {
         if logFileHandle != nil {
             closeFile()
         }
@@ -250,7 +258,49 @@ public class XCGFileLogDestination: XCGBaseLogDestination {
         if let writeToFileURL = writeToFileURL,
           let path = writeToFileURL.path {
 
-            NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
+            if (fileSizeLimit > 0) {
+                // if size of file > fileSize Limit
+                var fileAttributes : NSDictionary? = nil
+                do {
+                    fileAttributes = try NSFileManager.defaultManager().attributesOfItemAtPath(path)
+                }
+                catch let error as NSError {
+                    if ((error.domain != NSCocoaErrorDomain) || (error.code != NSFileReadNoSuchFileError)) {
+                        owner._logln("Attempt to get log file attributes failed: \(error.localizedDescription)", logLevel: .Error)
+                    }
+                }
+                
+                if let fileAttributes = fileAttributes {
+                    let size : NSNumber = fileAttributes[NSFileSize] as! NSNumber
+                    if (size.unsignedLongLongValue >= UInt64(fileSizeLimit)) {
+                        // rename existing file
+                        var newFilePath = ""
+                        newFilePath += writeToFileURL.URLByDeletingPathExtension!.path as String!
+                        
+                        let fileModDate : NSDate = fileAttributes[NSFileModificationDate] as! NSDate
+                        let dateFormatter = NSDateFormatter()
+                        dateFormatter.dateFormat = "yyyyMMdd-HHmmss"
+                        let fileModDateString = dateFormatter.stringFromDate(fileModDate)
+                        
+                        newFilePath += String(format:".%@",fileModDateString)
+                        
+                        let filePathExtension = writeToFileURL.pathExtension
+                        if (filePathExtension?.lengthOfBytesUsingEncoding(NSUTF8StringEncoding) > 0) {
+                            newFilePath += String(format:".%@",filePathExtension!)
+                        }
+                        
+                        do {
+                            try NSFileManager.defaultManager().moveItemAtPath(path, toPath: newFilePath)
+                        }
+                        catch let error as NSError {
+                            owner._logln("Attempt to rename log file failed: \(error.localizedDescription)", logLevel: .Error)
+                        }
+                    }
+                }
+            }
+            if (!append || !NSFileManager.defaultManager().fileExistsAtPath(path)) {
+                NSFileManager.defaultManager().createFileAtPath(path, contents: nil, attributes: nil)
+            }
             do {
                 logFileHandle = try NSFileHandle(forWritingToURL: writeToFileURL)
             }
@@ -260,6 +310,10 @@ public class XCGFileLogDestination: XCGBaseLogDestination {
                 return
             }
 
+            if (append) {
+                logFileHandle?.seekToEndOfFile();
+            }
+            
             owner.logAppDetails(self)
 
             let logDetails = XCGLogDetails(logLevel: .Info, date: NSDate(), logMessage: "XCGLogger writing to log to: \(writeToFileURL)", functionName: "", fileName: "", lineNumber: 0)
@@ -269,8 +323,13 @@ public class XCGFileLogDestination: XCGBaseLogDestination {
     }
 
     private func closeFile() {
+        flush()
         logFileHandle?.closeFile()
         logFileHandle = nil
+    }
+
+    public override func flush() {
+        logFileHandle?.synchronizeFile()
     }
 
     // MARK: - Misc Methods
@@ -506,11 +565,11 @@ public class XCGLogger: CustomDebugStringConvertible {
     }
 
     // MARK: - Setup methods
-    public class func setup(logLevel: LogLevel = .Debug, showLogIdentifier: Bool = false, showFunctionName: Bool = true, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, showDate: Bool = true, writeToFile: AnyObject? = nil, fileLogLevel: LogLevel? = nil) {
-        defaultInstance().setup(logLevel, showLogIdentifier: showLogIdentifier, showFunctionName: showFunctionName, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, showDate: showDate, writeToFile: writeToFile)
+    public class func setup(logLevel: LogLevel = .Debug, showLogIdentifier: Bool = false, showFunctionName: Bool = true, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, showDate: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileSizeLimit: Int64 = -1, fileLogLevel: LogLevel? = nil) {
+        defaultInstance().setup(logLevel, showLogIdentifier: showLogIdentifier, showFunctionName: showFunctionName, showThreadName: showThreadName, showLogLevel: showLogLevel, showFileNames: showFileNames, showLineNumbers: showLineNumbers, showDate: showDate, writeToFile: writeToFile, appendToFile: appendToFile, fileSizeLimit : fileSizeLimit, fileLogLevel : fileLogLevel)
     }
 
-    public func setup(logLevel: LogLevel = .Debug, showLogIdentifier: Bool = false, showFunctionName: Bool = true, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, showDate: Bool = true, writeToFile: AnyObject? = nil, fileLogLevel: LogLevel? = nil) {
+    public func setup(logLevel: LogLevel = .Debug, showLogIdentifier: Bool = false, showFunctionName: Bool = true, showThreadName: Bool = false, showLogLevel: Bool = true, showFileNames: Bool = true, showLineNumbers: Bool = true, showDate: Bool = true, writeToFile: AnyObject? = nil, appendToFile: Bool = false, fileSizeLimit: Int64 = -1, fileLogLevel: LogLevel? = nil) {
         outputLogLevel = logLevel;
 
         if let standardConsoleLogDestination = logDestination(XCGLogger.constants.baseConsoleLogDestinationIdentifier) as? XCGConsoleLogDestination {
@@ -524,11 +583,9 @@ public class XCGLogger: CustomDebugStringConvertible {
             standardConsoleLogDestination.outputLogLevel = logLevel
         }
 
-        logAppDetails()
-
         if let writeToFile: AnyObject = writeToFile {
             // We've been passed a file to use for logging, set up a file logger
-            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
+            let standardFileLogDestination: XCGFileLogDestination = XCGFileLogDestination(owner: self, writeToFile: writeToFile, append: appendToFile, fileSizeLimit: fileSizeLimit, identifier: XCGLogger.constants.baseFileLogDestinationIdentifier)
 
             standardFileLogDestination.showLogIdentifier = showLogIdentifier
             standardFileLogDestination.showFunctionName = showFunctionName
@@ -541,6 +598,8 @@ public class XCGLogger: CustomDebugStringConvertible {
 
             addLogDestination(standardFileLogDestination)
         }
+        
+        logAppDetails()
     }
 
     // MARK: - Logging methods
@@ -604,8 +663,19 @@ public class XCGLogger: CustomDebugStringConvertible {
         let processInfo: NSProcessInfo = NSProcessInfo.processInfo()
         let XCGLoggerVersionNumber = XCGLogger.constants.versionString
 
-        let logDetails: Array<XCGLogDetails> = [XCGLogDetails(logLevel: .Info, date: date, logMessage: "\(processInfo.processName) \(buildString)PID: \(processInfo.processIdentifier)", functionName: "", fileName: "", lineNumber: 0),
-            XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Version: \(XCGLoggerVersionNumber) - LogLevel: \(outputLogLevel)", functionName: "", fileName: "", lineNumber: 0)]
+        var logDetails: Array<XCGLogDetails> = [XCGLogDetails(logLevel: .Info, date: date, logMessage: "\(processInfo.processName) \(buildString)PID: \(processInfo.processIdentifier)", functionName: "", fileName: "", lineNumber: 0)]
+        
+        // log LogLevel for each logDestinationb
+        for logDestination in logDestinations {
+            if logDestination is XCGConsoleLogDestination {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Version: \(XCGLoggerVersionNumber) - Console LogLevel: \(outputLogLevel.description)", functionName: "", fileName: "", lineNumber: 0))
+            } else if logDestination is XCGFileLogDestination {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger Log file = \((logDestination as! XCGFileLogDestination).writeToFileURL!) - LogLevel: \(logDestination.outputLogLevel.description)", functionName: "", fileName: "", lineNumber: 0))
+            } else {
+                logDetails.append(XCGLogDetails(logLevel: .Info, date: date, logMessage: "XCGLogger DestinationID = \(logDestination.identifier) - LogLevel: \(logDestination.outputLogLevel.description)", functionName: "", fileName: "", lineNumber: 0))
+            }
+        }
+        
 
         for logDestination in (selectedLogDestination != nil ? [selectedLogDestination!] : logDestinations) {
             for logDetail in logDetails {
@@ -807,6 +877,16 @@ public class XCGLogger: CustomDebugStringConvertible {
 
     public func removeLogDestination(identifier: String) {
         logDestinations = logDestinations.filter({$0.identifier != identifier})
+    }
+    
+    
+    public func flushLog() {
+        for logDestination in self.logDestinations {
+            // if destination is a file, flush it
+            if let logDestination = logDestination as? XCGFileLogDestination {
+                logDestination.flush()
+            }
+        }
     }
 
     // MARK: - Private methods
